@@ -1,0 +1,21 @@
+{
+  "title": "Browser Storage Drive Widget",
+  "description": "Browser Storage Drive Widget settings.",
+  "jupyter.lab.toolbars": {
+    "BrowserStorage": [
+      { "name": "uploader", "rank": 10 },
+      { "name": "filename-searcher", "rank": 20 }
+    ]
+  },
+  "jupyter.lab.transform": true,
+  "properties": {
+    "toolbar": {
+      "title": "Browser Storage drive toolbar items",
+      "description": "Note: To disable a toolbar item,\ncopy it to User Preferences and add the\n\"disabled\" key. The following example will disable the uploader button:\n{\n  \"toolbar\": [\n    {\n      \"name\": \"uploader\",\n      \"disabled\": true\n    }\n  ]\n}\n\nToolbar description:",
+      "type": "array",
+      "default": []
+    }
+  },
+  "additionalProperties": false,
+  "type": "object"
+}
