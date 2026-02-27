@@ -1,4 +1,5 @@
 import { IRenderMime } from '@jupyterlab/rendermime-interfaces';
+import { PageConfig } from '@jupyterlab/coreutils';
 
 import mime from 'mime';
 
@@ -19,9 +20,7 @@ export namespace FILE {
    * Build-time configured file types.
    */
   const TYPES: Record<string, Partial<IRenderMime.IFileType>> = JSON.parse(
-    // TODO: read from the settings?
-    // PageConfig.getOption('fileTypes') || '{}'
-    '{}'
+    PageConfig.getOption('fileTypes') || '{}'
   );
 
   /**

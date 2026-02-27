@@ -1,14 +1,18 @@
 import { PathExt, URLExt } from '@jupyterlab/coreutils';
 
-import { INotebookContent } from '@jupyterlab/nbformat';
+import type { INotebookContent } from '@jupyterlab/nbformat';
 
-import { Contents, ServerConnection } from '@jupyterlab/services';
+import type { Contents } from '@jupyterlab/services';
+import { ServerConnection } from '@jupyterlab/services';
 
-import { ISignal, Signal } from '@lumino/signaling';
+import type { ISignal } from '@lumino/signaling';
+import { Signal } from '@lumino/signaling';
 
 import type localforage from 'localforage';
 
 import { FILE, MIME } from './file';
+
+type IModel = Contents.IModel;
 
 export const DRIVE_NAME = 'BrowserStorage';
 
@@ -23,11 +27,16 @@ const DEFAULT_STORAGE_NAME = 'JupyterLab Browser Storage';
  */
 const N_CHECKPOINTS = 5;
 
+const encoder = new TextEncoder();
+const decoder = new TextDecoder('utf-8');
+
 export class BrowserStorageDrive implements Contents.IDrive {
   constructor(options: BrowserStorageDrive.IOptions) {
     this._localforage = options.localforage;
     this._storageName = options.storageName || DEFAULT_STORAGE_NAME;
     this._storageDrivers = options.storageDrivers || null;
+    this._serverSettings =
+      options.serverSettings ?? ServerConnection.makeSettings();
     this._storage = this.createDefaultStorage();
     this._counters = this.createDefaultCounters();
     this._checkpoints = this.createDefaultCheckpoints();
@@ -50,7 +59,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
   }
 
   get serverSettings(): ServerConnection.ISettings {
-    return ServerConnection.makeSettings();
+    return this._serverSettings;
   }
 
   get fileChanged(): ISignal<Contents.IDrive, Contents.IChangedArgs> {
@@ -65,10 +74,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
    *
    * @returns A promise which resolves with the file content.
    */
-  async get(
-    path: string,
-    options?: Contents.IFetchOptions
-  ): Promise<Contents.IModel> {
+  async get(path: string, options?: Contents.IFetchOptions): Promise<IModel> {
     // remove leading slash
     path = decodeURIComponent(path.replace(/^\//, ''));
 
@@ -78,12 +84,11 @@ export class BrowserStorageDrive implements Contents.IDrive {
 
     const storage = this._storage;
     const item = await storage.getItem(path);
-    const model = item as Contents.IModel;
+    const model = item as IModel | null;
 
-    // TODO: handle this?
-    // if (!model) {
-    //   return null;
-    // }
+    if (!model) {
+      throw Error(`Could not find content with path ${path}`);
+    }
 
     if (!options?.content) {
       return {
@@ -95,8 +100,8 @@ export class BrowserStorageDrive implements Contents.IDrive {
 
     // for directories, find all files with the path as the prefix
     if (model.type === 'directory') {
-      const contentMap = new Map<string, Contents.IModel>();
-      await storage.iterate<Contents.IModel, void>((file, key) => {
+      const contentMap = new Map<string, IModel>();
+      await storage.iterate<IModel, void>((file, key) => {
         // use an additional slash to not include the directory itself
         if (key === `${path}/${file.name}`) {
           contentMap.set(file.name, file);
@@ -121,8 +126,50 @@ export class BrowserStorageDrive implements Contents.IDrive {
     return model;
   }
 
+  /**
+   * Get the download URL.
+   */
   async getDownloadUrl(path: string): Promise<string> {
-    throw new Error('Method not implemented.');
+    path = decodeURIComponent(path.replace(/^\//, ''));
+
+    const localItem = (await this._storage.getItem(path)) as IModel | null;
+    if (localItem && localItem.content !== null) {
+      let blob: Blob;
+
+      if (localItem.format === 'base64') {
+        const binaryString = atob(localItem.content as string);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        blob = new Blob([bytes], { type: localItem.mimetype });
+      } else if (localItem.format === 'json') {
+        const content = JSON.stringify(localItem.content);
+        blob = new Blob([content], { type: localItem.mimetype });
+      } else {
+        blob = new Blob([localItem.content as string], {
+          type: localItem.mimetype
+        });
+      }
+
+      return URL.createObjectURL(blob);
+    }
+
+    const baseUrl = this.serverSettings.baseUrl;
+    return URLExt.join(baseUrl, 'files', URLExt.encodeParts(path));
+  }
+
+  /**
+   * Clear all storage (files, counters, and checkpoints).
+   *
+   * @returns A promise which resolves when all storage is cleared.
+   */
+  async clearStorage(): Promise<void> {
+    await Promise.all([
+      this._storage.clear(),
+      this._counters.clear(),
+      this._checkpoints.clear()
+    ]);
   }
 
   /**
@@ -132,9 +179,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
    *
    * @returns A promise which resolves with the created file content when the file is created.
    */
-  async newUntitled(
-    options?: Contents.ICreateOptions
-  ): Promise<Contents.IModel> {
+  async newUntitled(options?: Contents.ICreateOptions): Promise<IModel> {
     const path = options?.path ?? '';
     const type = options?.type ?? 'notebook';
     const created = new Date().toISOString();
@@ -142,7 +187,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
     let dirname = PathExt.dirname(path);
     const basename = PathExt.basename(path);
     const extname = PathExt.extname(path);
-    const item = await this.get(dirname);
+    const item = await this.get(dirname).catch(() => null);
 
     // handle the case of "Save As", where the path points to the new file
     // to create, e.g. subfolder/example-copy.ipynb
@@ -161,7 +206,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
       name = path;
     }
 
-    let file: Contents.IModel;
+    let file: IModel;
     switch (type) {
       case 'directory': {
         const counter = await this._incrementCounter('directory');
@@ -191,14 +236,17 @@ export class BrowserStorageDrive implements Contents.IDrive {
           format: 'json',
           mimetype: MIME.JSON,
           content: Private.EMPTY_NB,
-          size: JSON.stringify(Private.EMPTY_NB).length,
+          size: encoder.encode(JSON.stringify(Private.EMPTY_NB)).length,
           writable: true,
           type: 'notebook'
         };
         break;
       }
       default: {
-        const ext = options?.ext ?? '.txt';
+        let ext = options?.ext ?? '.txt';
+        if (!ext.startsWith('.')) {
+          ext = `.${ext}`;
+        }
         const counter = await this._incrementCounter('file');
         const mimetype = FILE.getType(ext) || MIME.OCTET_STREAM;
 
@@ -230,6 +278,11 @@ export class BrowserStorageDrive implements Contents.IDrive {
 
     const key = file.path;
     await this._storage.setItem(key, file);
+    this._fileChanged.emit({
+      type: 'new',
+      oldValue: null,
+      newValue: file
+    });
     return file;
   }
 
@@ -248,6 +301,11 @@ export class BrowserStorageDrive implements Contents.IDrive {
       key => key === path || key.startsWith(slashed)
     );
     await Promise.all(toDelete.map(this.forgetPath, this));
+    this._fileChanged.emit({
+      type: 'delete',
+      oldValue: { path },
+      newValue: null
+    });
   }
 
   /**
@@ -258,9 +316,9 @@ export class BrowserStorageDrive implements Contents.IDrive {
    *
    * @returns A promise which resolves with the new file content model when the file is renamed.
    */
-  async rename(oldPath: string, newPath: string): Promise<Contents.IModel> {
+  async rename(oldPath: string, newPath: string): Promise<IModel> {
     const path = decodeURIComponent(oldPath);
-    const file = await this.get(path, { content: true });
+    const file = await this.get(path, { content: true }).catch(() => null);
     if (!file) {
       throw Error(`Could not find file with path ${path}`);
     }
@@ -280,14 +338,20 @@ export class BrowserStorageDrive implements Contents.IDrive {
     await this._checkpoints.removeItem(path);
     // if a directory, recurse through all children
     if (file.type === 'directory') {
-      let child: Contents.IModel;
+      let child: IModel;
       for (child of file.content) {
         await this.rename(
           URLExt.join(oldPath, child.name),
-          URLExt.join(oldPath, child.name)
+          URLExt.join(newPath, child.name)
         );
       }
     }
+
+    this._fileChanged.emit({
+      type: 'rename',
+      oldValue: { path: oldPath },
+      newValue: newFile
+    });
 
     return newFile;
   }
@@ -302,27 +366,27 @@ export class BrowserStorageDrive implements Contents.IDrive {
    */
   async save(
     path: string,
-    options?: Partial<Contents.IModel>
-  ): Promise<Contents.IModel> {
+    options: Partial<Contents.IModel> = {}
+  ): Promise<IModel> {
     path = decodeURIComponent(path);
 
     // process the file if coming from an upload
-    const ext = PathExt.extname(options?.name ?? '');
-    const chunk = options?.chunk;
+    const ext = PathExt.extname(options.name ?? '');
+    const chunk = options.chunk;
 
     // retrieve the content if it is a later chunk or the last one
     // the new content will then be appended to the existing one
-    const chunked = chunk ? chunk > 1 || chunk === -1 : false;
-    let item: Contents.IModel | null = await this.get(path, {
-      content: chunked
-    });
+    const appendChunk = chunk ? chunk > 1 || chunk === -1 : false;
+    let item: IModel | null = await this.get(path, {
+      content: appendChunk
+    }).catch(() => null);
 
     if (!item) {
       item = await this.newUntitled({ path, ext, type: 'file' });
     }
 
     if (!item) {
-      throw Error('Could not create the file');
+      throw Error(`Could not find file with path ${path}`);
     }
 
     // keep a reference to the original content
@@ -336,59 +400,102 @@ export class BrowserStorageDrive implements Contents.IDrive {
       last_modified: modified
     };
 
-    if (options?.content && options?.format === 'base64') {
+    if (options.content && options.format === 'base64') {
       const lastChunk = chunk ? chunk === -1 : true;
 
+      const contentBinaryString = this._handleUploadChunk(
+        options.content,
+        originalContent,
+        appendChunk
+      );
+
       if (ext === '.ipynb') {
-        const content = this._handleChunk(
-          options.content,
-          originalContent,
-          chunked
-        );
+        const content = lastChunk
+          ? JSON.parse(
+              decoder.decode(this._binaryStringToBytes(contentBinaryString))
+            )
+          : contentBinaryString;
         item = {
           ...item,
-          content: lastChunk ? JSON.parse(content) : content,
+          content,
           format: 'json',
           type: 'notebook',
-          size: content.length
+          size: contentBinaryString.length
         };
       } else if (FILE.hasFormat(ext, 'json')) {
-        const content = this._handleChunk(
-          options.content,
-          originalContent,
-          chunked
-        );
+        const content = lastChunk
+          ? JSON.parse(
+              decoder.decode(this._binaryStringToBytes(contentBinaryString))
+            )
+          : contentBinaryString;
         item = {
           ...item,
-          content: lastChunk ? JSON.parse(content) : content,
+          content,
           format: 'json',
           type: 'file',
-          size: content.length
+          size: contentBinaryString.length
         };
       } else if (FILE.hasFormat(ext, 'text')) {
-        const content = this._handleChunk(
-          options.content,
-          originalContent,
-          chunked
-        );
+        const content = lastChunk
+          ? decoder.decode(this._binaryStringToBytes(contentBinaryString))
+          : contentBinaryString;
         item = {
           ...item,
           content,
           format: 'text',
           type: 'file',
-          size: content.length
+          size: contentBinaryString.length
         };
       } else {
-        const content = options.content;
+        const content = lastChunk
+          ? btoa(contentBinaryString)
+          : contentBinaryString;
         item = {
           ...item,
           content,
-          size: atob(content).length
+          format: 'base64',
+          type: 'file',
+          size: contentBinaryString.length
         };
       }
     }
 
+    // fixup content sizes if necessary
+    if (item.content) {
+      switch (options.format) {
+        case 'json': {
+          item = {
+            ...item,
+            size: encoder.encode(JSON.stringify(item.content)).length
+          };
+          break;
+        }
+        case 'text': {
+          item = {
+            ...item,
+            size: encoder.encode(item.content as string).length
+          };
+          break;
+        }
+        // base64 save was already handled above
+        case 'base64': {
+          break;
+        }
+        default: {
+          item = { ...item, size: 0 };
+          break;
+        }
+      }
+    } else {
+      item = { ...item, size: 0 };
+    }
+
     await this._storage.setItem(path, item);
+    this._fileChanged.emit({
+      type: 'save',
+      oldValue: null,
+      newValue: item
+    });
     return item;
   }
 
@@ -404,17 +511,21 @@ export class BrowserStorageDrive implements Contents.IDrive {
    * #### Notes
    * The server will select the name of the copied file.
    */
-  async copy(path: string, toLocalDir: string): Promise<Contents.IModel> {
+  async copy(path: string, toLocalDir: string): Promise<IModel> {
     let name = PathExt.basename(path);
-    toLocalDir = toLocalDir === '' ? '' : `${toLocalDir.slice(1)}/`;
+    toLocalDir = toLocalDir === '' ? '' : `${PathExt.removeSlash(toLocalDir)}/`;
     // TODO: better handle naming collisions with existing files
-    while (await this.get(`${toLocalDir}${name}`, { content: true })) {
+    while (
+      await this.get(`${toLocalDir}${name}`, { content: true })
+        .then(() => true)
+        .catch(() => false)
+    ) {
       const ext = PathExt.extname(name);
       const base = name.replace(ext, '');
       name = `${base} (copy)${ext}`;
     }
     const toPath = `${toLocalDir}${name}`;
-    let item = await this.get(path, { content: true });
+    let item = await this.get(path, { content: true }).catch(() => null);
     if (!item) {
       throw Error(`Could not find file with path ${path}`);
     }
@@ -424,6 +535,11 @@ export class BrowserStorageDrive implements Contents.IDrive {
       path: toPath
     };
     await this._storage.setItem(toPath, item);
+    this._fileChanged.emit({
+      type: 'new',
+      oldValue: null,
+      newValue: item
+    });
     return item;
   }
 
@@ -438,12 +554,12 @@ export class BrowserStorageDrive implements Contents.IDrive {
   async createCheckpoint(path: string): Promise<Contents.ICheckpointModel> {
     const checkpoints = this._checkpoints;
     path = decodeURIComponent(path);
-    const item = await this.get(path, { content: true });
+    const item = await this.get(path, { content: true }).catch(() => null);
     if (!item) {
       throw Error(`Could not find file with path ${path}`);
     }
     const copies = (
-      ((await checkpoints.getItem(path)) as Contents.IModel[]) ?? []
+      ((await checkpoints.getItem(path)) as IModel[]) ?? []
     ).filter(Boolean);
     copies.push(item);
     // keep only a certain amount of checkpoints per file
@@ -452,7 +568,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
     }
     await checkpoints.setItem(path, copies);
     const id = `${copies.length - 1}`;
-    return { id, last_modified: (item as Contents.IModel).last_modified };
+    return { id, last_modified: item.last_modified };
   }
 
   /**
@@ -464,8 +580,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
    *    the file.
    */
   async listCheckpoints(path: string): Promise<Contents.ICheckpointModel[]> {
-    const copies: Contents.IModel[] =
-      (await this._checkpoints.getItem(path)) || [];
+    const copies: IModel[] = (await this._checkpoints.getItem(path)) || [];
     return copies.filter(Boolean).map(this.normalizeCheckpoint, this);
   }
 
@@ -479,9 +594,8 @@ export class BrowserStorageDrive implements Contents.IDrive {
    */
   async restoreCheckpoint(path: string, checkpointID: string): Promise<void> {
     path = decodeURIComponent(path);
-    const copies = ((await this._checkpoints.getItem(path)) ||
-      []) as Contents.IModel[];
-    const id = parseInt(checkpointID);
+    const copies = ((await this._checkpoints.getItem(path)) || []) as IModel[];
+    const id = parseInt(checkpointID, 10);
     const item = copies[id];
     await this._storage.setItem(path, item);
   }
@@ -496,9 +610,8 @@ export class BrowserStorageDrive implements Contents.IDrive {
    */
   async deleteCheckpoint(path: string, checkpointID: string): Promise<void> {
     path = decodeURIComponent(path);
-    const copies = ((await this._checkpoints.getItem(path)) ||
-      []) as Contents.IModel[];
-    const id = parseInt(checkpointID);
+    const copies = ((await this._checkpoints.getItem(path)) || []) as IModel[];
+    const id = parseInt(checkpointID, 10);
     copies.splice(id, 1);
     await this._checkpoints.setItem(path, copies);
   }
@@ -567,32 +680,28 @@ export class BrowserStorageDrive implements Contents.IDrive {
    * Normalize a checkpoint
    */
   protected normalizeCheckpoint(
-    model: Contents.IModel,
+    model: IModel,
     id: number
   ): Contents.ICheckpointModel {
     return { id: id.toString(), last_modified: model.last_modified };
   }
 
   /**
-   * Retrieve the contents for this path from the local storage
+   * Retrieve the contents for this path from the local storage.
+   *
    * @param path - The contents path to retrieve
    *
    * @returns A promise which resolves with a Map of contents, keyed by local file name
    */
-  private async _getFolder(path: string): Promise<Contents.IModel> {
-    const content = new Map<string, Contents.IModel>();
+  private async _getFolder(path: string): Promise<IModel> {
+    const content = new Map<string, IModel>();
     const storage = this._storage;
-    await storage.iterate<Contents.IModel, void>((file, key) => {
+    await storage.iterate<IModel, void>((file, key) => {
       if (key.includes('/')) {
         return;
       }
       content.set(file.path, file);
     });
-
-    // TODO: handle this?
-    // if (path && content.size === 0) {
-    //   return null;
-    // }
 
     return {
       name: '',
@@ -623,21 +732,30 @@ export class BrowserStorageDrive implements Contents.IDrive {
   }
 
   /**
-   * Handle a chunk of a file.
-   * Decode and unescape a base64-encoded string.
-   * @param content the content to process
-   *
-   * @returns the decoded string, appended to the original content if chunked
-   * /
+   * Handle an upload chunk for a file.
+   * Each chunk is base64 encoded, so decode it and append it to the original
+   * content when needed.
    */
-  private _handleChunk(
+  private _handleUploadChunk(
     newContent: string,
-    originalContent: string,
-    chunked?: boolean
+    originalContent: unknown,
+    appendChunk: boolean
   ): string {
-    const escaped = decodeURIComponent(escape(atob(newContent)));
-    const content = chunked ? originalContent + escaped : escaped;
-    return content;
+    const newContentBinaryString = atob(newContent);
+    return appendChunk
+      ? `${(originalContent as string | undefined) || ''}${newContentBinaryString}`
+      : newContentBinaryString;
+  }
+
+  /**
+   * Convert a binary string to an Uint8Array.
+   */
+  private _binaryStringToBytes(binaryString: string): Uint8Array {
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
   }
 
   private _isDisposed = false;
@@ -650,6 +768,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
   private _counters: LocalForage;
   private _checkpoints: LocalForage;
   private _localforage: typeof localforage;
+  private _serverSettings: ServerConnection.ISettings;
 }
 
 /**
@@ -664,11 +783,15 @@ export namespace BrowserStorageDrive {
     /**
      * The name of the storage.
      */
-    storageName?: string;
+    storageName?: string | null;
     /**
      * The storage drivers to use.
      */
     storageDrivers?: string[] | null;
+    /**
+     * The server settings to use when generating fallback download URLs.
+     */
+    serverSettings?: ServerConnection.ISettings;
   }
 }
 
@@ -683,7 +806,7 @@ namespace Private {
     metadata: {
       orig_nbformat: 4
     },
-    nbformat_minor: 4,
+    nbformat_minor: 5,
     nbformat: 4,
     cells: []
   };
