@@ -23,6 +23,19 @@ To install the extension, execute:
 pip install jupyterlab_browser_storage
 ```
 
+## Programmatic Usage
+
+The package can also be used as a library when only the drive implementation is needed:
+
+```ts
+import { BrowserStorageDrive } from 'jupyterlab-browser-storage';
+import localforage from 'localforage';
+
+const drive = new BrowserStorageDrive({ localforage });
+```
+
+The root package export (`jupyterlab-browser-storage`) still provides the JupyterLab plugin as the default export.
+
 ## Uninstall
 
 To remove the extension, execute:

@@ -114,4 +114,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
+export { BrowserStorageDrive, DRIVE_NAME } from './drive';
+export { FILE, MIME } from './file';
+
 export default plugin;
