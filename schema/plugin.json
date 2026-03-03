@@ -9,6 +9,12 @@
   },
   "jupyter.lab.transform": true,
   "properties": {
+    "storageName": {
+      "title": "Storage Name",
+      "description": "The name of the storage used by the browser storage drive (e.g. for IndexedDB). Changing this value requires a page reload to take effect.",
+      "type": "string",
+      "default": "JupyterLab Browser Storage"
+    },
     "toolbar": {
       "title": "Browser Storage drive toolbar items",
       "description": "Note: To disable a toolbar item,\ncopy it to User Preferences and add the\n\"disabled\" key. The following example will disable the uploader button:\n{\n  \"toolbar\": [\n    {\n      \"name\": \"uploader\",\n      \"disabled\": true\n    }\n  ]\n}\n\nToolbar description:",

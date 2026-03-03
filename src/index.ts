@@ -38,7 +38,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
   requires: [IFileBrowserFactory, ITranslator],
   optional: [ISettingRegistry, IToolbarWidgetRegistry],
   autoStart: true,
-  activate: (
+  activate: async (
     app: JupyterFrontEnd,
     browser: IFileBrowserFactory,
     translator: ITranslator,
@@ -50,6 +50,29 @@ const plugin: JupyterFrontEndPlugin<void> = {
 
     const trans = translator.load('jupyterlab-filesystem-access');
 
+    // Create the toolbar factory first to register the schema transformer.
+    // This must happen before settingRegistry.load() because the schema
+    // has "jupyter.lab.transform": true.
+    let toolbarFactory: ReturnType<typeof createToolbarFactory> | null = null;
+    if (toolbarRegistry && settingRegistry) {
+      toolbarFactory = createToolbarFactory(
+        toolbarRegistry,
+        settingRegistry,
+        DRIVE_NAME,
+        plugin.id,
+        translator ?? nullTranslator
+      );
+    }
+
+    let settings: ISettingRegistry.ISettings | null = null;
+    if (settingRegistry) {
+      try {
+        settings = await settingRegistry.load(plugin.id);
+      } catch (e) {
+        console.warn('jupyterlab-browser-storage: Failed to load settings.', e);
+      }
+    }
+
     const drive = new BrowserStorageDrive({ localforage });
 
     serviceManager.contents.addDrive(drive);
@@ -57,25 +80,28 @@ const plugin: JupyterFrontEndPlugin<void> = {
     const widget = createFileBrowser('jp-filesystem-browser', {
       driveName: drive.name
     });
+
+    const onSettingsChanged = (settings: ISettingRegistry.ISettings) => {
+      const storageName =
+        (settings.get('storageName').composite as string) || undefined;
+      if (storageName && storageName !== drive.storageName) {
+        drive.storageName = storageName;
+        widget.model.refresh();
+      }
+    };
+
+    if (settings) {
+      settings.changed.connect(onSettingsChanged);
+      onSettingsChanged(settings);
+    }
     widget.title.caption = trans.__('Browser Storage');
     widget.title.icon = listIcon;
 
     const toolbar = widget.toolbar;
     toolbar.id = 'jp-browserstorage-toolbar';
 
-    if (toolbarRegistry && settingRegistry) {
-      // Set toolbar
-      setToolbar(
-        toolbar,
-        createToolbarFactory(
-          toolbarRegistry,
-          settingRegistry,
-          DRIVE_NAME,
-          plugin.id,
-          translator ?? nullTranslator
-        ),
-        toolbar
-      );
+    if (toolbarFactory && toolbarRegistry && settingRegistry) {
+      setToolbar(toolbar, toolbarFactory, toolbar);
 
       toolbarRegistry.addFactory(
         DRIVE_NAME,

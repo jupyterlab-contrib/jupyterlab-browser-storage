@@ -18,7 +18,6 @@ export const DRIVE_NAME = 'BrowserStorage';
 
 /**
  * The name of the local storage.
- * TODO: make this configurable in the settings.
  */
 const DEFAULT_STORAGE_NAME = 'JupyterLab Browser Storage';
 
@@ -56,6 +55,26 @@ export class BrowserStorageDrive implements Contents.IDrive {
 
   get name(): string {
     return DRIVE_NAME;
+  }
+
+  /**
+   * Get the storage name used by the localforage instances.
+   */
+  get storageName(): string {
+    return this._storageName;
+  }
+
+  /**
+   * Set the storage name and recreate the localforage instances.
+   */
+  set storageName(value: string) {
+    if (this._storageName === value) {
+      return;
+    }
+    this._storageName = value;
+    this._storage = this.createDefaultStorage();
+    this._counters = this.createDefaultCounters();
+    this._checkpoints = this.createDefaultCheckpoints();
   }
 
   get serverSettings(): ServerConnection.ISettings {
