@@ -18,7 +18,6 @@ export const DRIVE_NAME = 'BrowserStorage';
 
 /**
  * The name of the local storage.
- * TODO: make this configurable in the settings.
  */
 const DEFAULT_STORAGE_NAME = 'JupyterLab Browser Storage';
 

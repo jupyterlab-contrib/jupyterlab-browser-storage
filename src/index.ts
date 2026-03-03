@@ -38,7 +38,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
   requires: [IFileBrowserFactory, ITranslator],
   optional: [ISettingRegistry, IToolbarWidgetRegistry],
   autoStart: true,
-  activate: (
+  activate: async (
     app: JupyterFrontEnd,
     browser: IFileBrowserFactory,
     translator: ITranslator,
@@ -50,7 +50,14 @@ const plugin: JupyterFrontEndPlugin<void> = {
 
     const trans = translator.load('jupyterlab-filesystem-access');
 
-    const drive = new BrowserStorageDrive({ localforage });
+    let storageName: string | undefined;
+    if (settingRegistry) {
+      const settings = await settingRegistry.load(plugin.id);
+      storageName =
+        (settings.get('storageName').composite as string) || undefined;
+    }
+
+    const drive = new BrowserStorageDrive({ localforage, storageName });
 
     serviceManager.contents.addDrive(drive);
 
