@@ -52,9 +52,13 @@ const plugin: JupyterFrontEndPlugin<void> = {
 
     let storageName: string | undefined;
     if (settingRegistry) {
-      const settings = await settingRegistry.load(plugin.id);
-      storageName =
-        (settings.get('storageName').composite as string) || undefined;
+      try {
+        const settings = await settingRegistry.load(plugin.id);
+        storageName =
+          (settings.get('storageName').composite as string) || undefined;
+      } catch {
+        // fall back to the default storage name if settings fail to load
+      }
     }
 
     const drive = new BrowserStorageDrive({ localforage, storageName });
