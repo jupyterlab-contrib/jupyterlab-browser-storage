@@ -57,6 +57,26 @@ export class BrowserStorageDrive implements Contents.IDrive {
     return DRIVE_NAME;
   }
 
+  /**
+   * Get the storage name used by the localforage instances.
+   */
+  get storageName(): string {
+    return this._storageName;
+  }
+
+  /**
+   * Set the storage name and recreate the localforage instances.
+   */
+  set storageName(value: string) {
+    if (this._storageName === value) {
+      return;
+    }
+    this._storageName = value;
+    this._storage = this.createDefaultStorage();
+    this._counters = this.createDefaultCounters();
+    this._checkpoints = this.createDefaultCheckpoints();
+  }
+
   get serverSettings(): ServerConnection.ISettings {
     return this._serverSettings;
   }

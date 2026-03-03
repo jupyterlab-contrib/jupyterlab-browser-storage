@@ -50,14 +50,32 @@ const plugin: JupyterFrontEndPlugin<void> = {
 
     const trans = translator.load('jupyterlab-filesystem-access');
 
+    // Create the toolbar factory first to register the schema transformer.
+    // This must happen before settingRegistry.load() because the schema
+    // has "jupyter.lab.transform": true.
+    let toolbarFactory: ReturnType<typeof createToolbarFactory> | null = null;
+    if (toolbarRegistry && settingRegistry) {
+      toolbarFactory = createToolbarFactory(
+        toolbarRegistry,
+        settingRegistry,
+        DRIVE_NAME,
+        plugin.id,
+        translator ?? nullTranslator
+      );
+    }
+
     let storageName: string | undefined;
+    let settings: ISettingRegistry.ISettings | null = null;
     if (settingRegistry) {
       try {
-        const settings = await settingRegistry.load(plugin.id);
+        settings = await settingRegistry.load(plugin.id);
         storageName =
           (settings.get('storageName').composite as string) || undefined;
-      } catch {
-        // fall back to the default storage name if settings fail to load
+      } catch (e) {
+        console.warn(
+          'jupyterlab-browser-storage: Failed to load settings.',
+          e
+        );
       }
     }
 
@@ -68,25 +86,25 @@ const plugin: JupyterFrontEndPlugin<void> = {
     const widget = createFileBrowser('jp-filesystem-browser', {
       driveName: drive.name
     });
+
+    if (settings) {
+      settings.changed.connect(() => {
+        const newStorageName =
+          (settings!.get('storageName').composite as string) || undefined;
+        if (newStorageName && newStorageName !== drive.storageName) {
+          drive.storageName = newStorageName;
+          widget.model.refresh();
+        }
+      });
+    }
     widget.title.caption = trans.__('Browser Storage');
     widget.title.icon = listIcon;
 
     const toolbar = widget.toolbar;
     toolbar.id = 'jp-browserstorage-toolbar';
 
-    if (toolbarRegistry && settingRegistry) {
-      // Set toolbar
-      setToolbar(
-        toolbar,
-        createToolbarFactory(
-          toolbarRegistry,
-          settingRegistry,
-          DRIVE_NAME,
-          plugin.id,
-          translator ?? nullTranslator
-        ),
-        toolbar
-      );
+    if (toolbarFactory && toolbarRegistry && settingRegistry) {
+      setToolbar(toolbar, toolbarFactory, toolbar);
 
       toolbarRegistry.addFactory(
         DRIVE_NAME,
