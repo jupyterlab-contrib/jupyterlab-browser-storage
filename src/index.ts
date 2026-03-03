@@ -72,10 +72,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         storageName =
           (settings.get('storageName').composite as string) || undefined;
       } catch (e) {
-        console.warn(
-          'jupyterlab-browser-storage: Failed to load settings.',
-          e
-        );
+        console.warn('jupyterlab-browser-storage: Failed to load settings.', e);
       }
     }
 
