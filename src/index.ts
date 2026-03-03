@@ -64,19 +64,16 @@ const plugin: JupyterFrontEndPlugin<void> = {
       );
     }
 
-    let storageName: string | undefined;
     let settings: ISettingRegistry.ISettings | null = null;
     if (settingRegistry) {
       try {
         settings = await settingRegistry.load(plugin.id);
-        storageName =
-          (settings.get('storageName').composite as string) || undefined;
       } catch (e) {
         console.warn('jupyterlab-browser-storage: Failed to load settings.', e);
       }
     }
 
-    const drive = new BrowserStorageDrive({ localforage, storageName });
+    const drive = new BrowserStorageDrive({ localforage });
 
     serviceManager.contents.addDrive(drive);
 
@@ -84,15 +81,18 @@ const plugin: JupyterFrontEndPlugin<void> = {
       driveName: drive.name
     });
 
+    const onSettingsChanged = (settings: ISettingRegistry.ISettings) => {
+      const storageName =
+        (settings.get('storageName').composite as string) || undefined;
+      if (storageName && storageName !== drive.storageName) {
+        drive.storageName = storageName;
+        widget.model.refresh();
+      }
+    };
+
     if (settings) {
-      settings.changed.connect(() => {
-        const newStorageName =
-          (settings!.get('storageName').composite as string) || undefined;
-        if (newStorageName && newStorageName !== drive.storageName) {
-          drive.storageName = newStorageName;
-          widget.model.refresh();
-        }
-      });
+      settings.changed.connect(onSettingsChanged);
+      onSettingsChanged(settings);
     }
     widget.title.caption = trans.__('Browser Storage');
     widget.title.icon = listIcon;
