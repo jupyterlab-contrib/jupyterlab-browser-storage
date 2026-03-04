@@ -15,6 +15,41 @@
       "type": "string",
       "default": "JupyterLab Browser Storage"
     },
+    "additionalFileTypes": {
+      "title": "Additional File Types",
+      "description": "Additional file types to register with the browser storage drive.\nEach entry must have a 'name', 'extensions' (array of file extensions like '.py'), 'fileFormat' ('text', 'json', or 'base64'), and optionally 'mimeTypes' (array of MIME types).\n\nThe extension includes built-in defaults for common file types. Use this setting to add file types that are not covered by the defaults.\n\nExample:\n[\n  {\n    \"name\": \"custom-config\",\n    \"extensions\": [\".myconfig\"],\n    \"mimeTypes\": [\"text/plain\"],\n    \"fileFormat\": \"text\"\n  }\n]",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name of the file type."
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The file extensions (e.g. ['.py', '.pyw'])."
+          },
+          "mimeTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The MIME types associated with this file type."
+          },
+          "fileFormat": {
+            "type": "string",
+            "enum": ["text", "json", "base64"],
+            "description": "The file format: 'text', 'json', or 'base64'."
+          }
+        },
+        "required": ["name", "extensions", "fileFormat"]
+      },
+      "default": []
+    },
     "toolbar": {
       "title": "Browser Storage drive toolbar items",
       "description": "Note: To disable a toolbar item,\ncopy it to User Preferences and add the\n\"disabled\" key. The following example will disable the uploader button:\n{\n  \"toolbar\": [\n    {\n      \"name\": \"uploader\",\n      \"disabled\": true\n    }\n  ]\n}\n\nToolbar description:",

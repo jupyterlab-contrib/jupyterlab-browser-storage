@@ -24,6 +24,7 @@ import { listIcon, IScore, FilenameSearcher } from '@jupyterlab/ui-components';
 import localforage from 'localforage';
 
 import { DRIVE_NAME, BrowserStorageDrive } from './drive';
+import { FILE, IFileTypeDefinition } from './file';
 
 /**
  * The class name added to the filebrowser filterbox node.
@@ -88,6 +89,11 @@ const plugin: JupyterFrontEndPlugin<void> = {
         drive.storageName = storageName;
         widget.model.refresh();
       }
+
+      const additionalFileTypes =
+        (settings.get('additionalFileTypes')
+          .composite as unknown as IFileTypeDefinition[]) || [];
+      FILE.setAdditionalFileTypes(additionalFileTypes);
     };
 
     if (settings) {
@@ -141,6 +147,6 @@ const plugin: JupyterFrontEndPlugin<void> = {
 };
 
 export { BrowserStorageDrive, DRIVE_NAME } from './drive';
-export { FILE, MIME } from './file';
+export { FILE, MIME, IFileTypeDefinition } from './file';
 
 export default plugin;
