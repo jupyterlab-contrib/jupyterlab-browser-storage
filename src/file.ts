@@ -148,8 +148,10 @@ export namespace FILE {
   /**
    * Build-time configured file types from PageConfig (e.g. from JupyterLite).
    */
-  const PAGE_CONFIG_TYPES: Record<string, Partial<IRenderMime.IFileType>> =
-    JSON.parse(PageConfig.getOption('fileTypes') || '{}');
+  const PAGE_CONFIG_TYPES: Record<
+    string,
+    Partial<IRenderMime.IFileType>
+  > = JSON.parse(PageConfig.getOption('fileTypes') || '{}');
 
   /**
    * All active file types. Starts with defaults merged with PageConfig types,

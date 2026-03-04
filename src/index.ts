@@ -91,7 +91,8 @@ const plugin: JupyterFrontEndPlugin<void> = {
       }
 
       const additionalFileTypes =
-        (settings.get('additionalFileTypes').composite as unknown as IFileTypeDefinition[]) || [];
+        (settings.get('additionalFileTypes')
+          .composite as unknown as IFileTypeDefinition[]) || [];
       FILE.setAdditionalFileTypes(additionalFileTypes);
     };
 
