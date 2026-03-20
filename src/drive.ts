@@ -203,27 +203,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
     const type = options?.type ?? 'notebook';
     const created = new Date().toISOString();
 
-    let dirname = PathExt.dirname(path);
-    const basename = PathExt.basename(path);
-    const extname = PathExt.extname(path);
-    const item = await this.get(dirname).catch(() => null);
-
-    // handle the case of "Save As", where the path points to the new file
-    // to create, e.g. subfolder/example-copy.ipynb
-    let name = '';
-    if (path && !extname && item) {
-      // directory
-      dirname = `${path}/`;
-      name = '';
-    } else if (dirname && basename) {
-      // file in a subfolder
-      dirname = `${dirname}/`;
-      name = basename;
-    } else {
-      // file at the top level
-      dirname = '';
-      name = path;
-    }
+    let name: string | undefined = undefined;
 
     let file: IModel;
     switch (type) {
@@ -232,7 +212,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
         name = `Untitled Folder${counter || ''}`;
         file = {
           name,
-          path: `${dirname}${name}`,
+          path: PathExt.join(path, name),
           last_modified: created,
           created,
           format: 'json',
@@ -249,7 +229,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
         name = name || `Untitled${counter || ''}.ipynb`;
         file = {
           name,
-          path: `${dirname}${name}`,
+          path: PathExt.join(path, name),
           last_modified: created,
           created,
           format: 'json',
@@ -262,15 +242,22 @@ export class BrowserStorageDrive implements Contents.IDrive {
         break;
       }
       default: {
-        let ext = options?.ext ?? '.txt';
-        if (!ext.startsWith('.')) {
+        let ext = options?.ext;
+        if (ext && !ext.startsWith('.')) {
           ext = `.${ext}`;
         }
         const counter = await this._incrementCounter('file');
-        const mimetype = FILE.getType(ext) || MIME.OCTET_STREAM;
+        const mimetype = ext
+          ? FILE.getType(ext) || MIME.OCTET_STREAM
+          : MIME.OCTET_STREAM;
 
         let format: Contents.FileFormat;
-        if (FILE.hasFormat(ext, 'text') || mimetype.indexOf('text') !== -1) {
+        if (!ext) {
+          format = 'base64';
+        } else if (
+          FILE.hasFormat(ext, 'text') ||
+          mimetype.indexOf('text') !== -1
+        ) {
           format = 'text';
         } else if (ext.indexOf('json') !== -1 || ext.indexOf('ipynb') !== -1) {
           format = 'json';
@@ -281,7 +268,7 @@ export class BrowserStorageDrive implements Contents.IDrive {
         name = name || `untitled${counter || ''}${ext}`;
         file = {
           name,
-          path: `${dirname}${name}`,
+          path: PathExt.join(path, name),
           last_modified: created,
           created,
           format,
@@ -390,7 +377,13 @@ export class BrowserStorageDrive implements Contents.IDrive {
     path = decodeURIComponent(path);
 
     // process the file if coming from an upload
-    const ext = PathExt.extname(options.name ?? '');
+    const name = options.name
+      ? options.name
+      : PathExt.basename(path) ?? undefined;
+    const ext = name ? PathExt.extname(name) ?? undefined : undefined;
+    const mimetype = ext
+      ? FILE.getType(ext) || MIME.OCTET_STREAM
+      : MIME.OCTET_STREAM;
     const chunk = options.chunk;
 
     // retrieve the content if it is a later chunk or the last one
@@ -400,35 +393,67 @@ export class BrowserStorageDrive implements Contents.IDrive {
       content: appendChunk
     }).catch(() => null);
 
-    if (!item) {
-      item = await this.newUntitled({ path, ext, type: 'file' });
+    const now = new Date().toISOString();
+
+    let type = options.type || 'file';
+
+    // Yeah sure, we all know notebooks are not files
+    // This is some contents API nonsense
+    if (ext && ext === '.ipynb') {
+      type = 'notebook';
     }
 
-    if (!item) {
-      throw Error(`Could not find file with path ${path}`);
-    }
+    const format = options.format || 'base64';
+    const content = options.content || '';
 
     // keep a reference to the original content
-    const originalContent = item.content;
+    const originalContent = item?.content;
 
-    const modified = new Date().toISOString();
-    // override with the new values
-    item = {
-      ...item,
-      ...options,
-      last_modified: modified
-    };
+    if (item) {
+      item = {
+        ...item,
+        last_modified: now,
+        format,
+        mimetype,
+        content,
+        writable: true,
+        type
+      };
+    } else {
+      item = {
+        name,
+        path,
+        last_modified: now,
+        created: now,
+        format,
+        mimetype,
+        content,
+        writable: true,
+        type
+      } as IModel;
+    }
 
-    if (options.content && options.format === 'base64') {
+    if (content && options.format === 'base64') {
       const lastChunk = chunk ? chunk === -1 : true;
 
       const contentBinaryString = this._handleUploadChunk(
-        options.content,
+        content,
         originalContent,
         appendChunk
       );
 
-      if (ext === '.ipynb') {
+      if (!ext) {
+        const content = lastChunk
+          ? decoder.decode(this._binaryStringToBytes(contentBinaryString))
+          : contentBinaryString;
+        item = {
+          ...item,
+          content,
+          format: 'text',
+          type: 'file',
+          size: contentBinaryString.length
+        };
+      } else if (ext === '.ipynb') {
         const content = lastChunk
           ? JSON.parse(
               decoder.decode(this._binaryStringToBytes(contentBinaryString))
