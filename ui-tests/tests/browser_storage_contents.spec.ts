@@ -295,16 +295,17 @@ test.describe('Browser Storage Contents', () => {
     }, notebookPath);
 
     await page.waitForSelector('.jp-NotebookPanel');
-    await page.notebook.runCellByCell();
-
-    for (const [cellIndex] of cellSources.entries()) {
-      await expect
-        .poll(
-          async () =>
-            (await page.notebook.getCellTextOutput(cellIndex))?.[0] ?? ''
-        )
-        .toContain('Ok');
-    }
+    await page.notebook.runCellByCell({
+      onAfterCellRun: async cellIndex => {
+        await expect
+          .poll(
+            async () =>
+              (await page.notebook.getCellTextOutput(cellIndex))?.[0] ?? '',
+            { timeout: 10000 }
+          )
+          .toContain('Ok');
+      }
+    });
   });
 
   test('creates a BrowserStorage notebook and deletes it', async ({ page }) => {
