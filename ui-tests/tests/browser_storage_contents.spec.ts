@@ -1,3 +1,4 @@
+import { Buffer } from 'buffer';
 import { promises as fs } from 'fs';
 
 import { expect, test, type IJupyterLabPageFixture } from '@jupyterlab/galata';
@@ -6,8 +7,10 @@ import {
   clearBrowserStorageDrive,
   createBrowserStorageDirectory,
   deleteBrowserStoragePath,
-  getBrowserStorageItems,
-  getNotebookSource
+  getFileModel,
+  getNotebookSource,
+  isBrowserStorageFileListedInBrowser,
+  openBrowserStorageItem
 } from './browser_storage_utils';
 
 async function createNotebook(
@@ -48,98 +51,6 @@ async function createNotebook(
   }, source);
 }
 
-async function getPythonKernelName(
-  page: IJupyterLabPageFixture
-): Promise<string> {
-  const kernelName = await page.evaluate(async () => {
-    const app = (window as any).galata.app;
-    await app.serviceManager.ready;
-
-    const kernelspecs =
-      app.serviceManager.kernelspecs?.specs?.kernelspecs ?? {};
-
-    for (const name of ['python3', 'python']) {
-      if (kernelspecs[name]?.language === 'python') {
-        return name;
-      }
-    }
-
-    for (const [name, spec] of Object.entries(kernelspecs) as Array<
-      [string, { language?: string }]
-    >) {
-      if (spec.language === 'python') {
-        return name;
-      }
-    }
-
-    return null;
-  });
-
-  if (!kernelName) {
-    throw new Error(
-      'Could not find a Python kernel for notebook roundtrip tests'
-    );
-  }
-
-  return kernelName;
-}
-
-async function createCodeNotebook(
-  page: IJupyterLabPageFixture,
-  cellSources: string[]
-): Promise<string> {
-  const kernelName = await getPythonKernelName(page);
-
-  return page.evaluate(
-    async ({ kernelName, notebookCellSources }) => {
-      const app = (window as any).galata.app;
-      await app.serviceManager.ready;
-
-      const name = `browser-storage-roundtrip-${Date.now()}-${Math.floor(
-        Math.random() * 1000
-      )}.ipynb`;
-      const path = `BrowserStorage:${name}`;
-      const kernelspec =
-        app.serviceManager.kernelspecs?.specs?.kernelspecs?.[kernelName];
-
-      const content = {
-        cells: notebookCellSources.map((source: string) => ({
-          cell_type: 'code',
-          execution_count: null,
-          metadata: {
-            trusted: true
-          },
-          outputs: [],
-          source
-        })),
-        metadata: {
-          kernelspec: {
-            display_name: kernelspec?.display_name ?? kernelName,
-            language: kernelspec?.language ?? 'python',
-            name: kernelName
-          },
-          language_info: {
-            name: 'python'
-          },
-          orig_nbformat: 4
-        },
-        nbformat: 4,
-        nbformat_minor: 5
-      };
-
-      await app.serviceManager.contents.save(path, {
-        content,
-        format: 'json',
-        name,
-        type: 'notebook'
-      });
-
-      return path;
-    },
-    { kernelName, notebookCellSources: cellSources }
-  );
-}
-
 async function createTextFile(
   page: IJupyterLabPageFixture,
   name: string,
@@ -154,6 +65,30 @@ async function createTextFile(
       await app.serviceManager.contents.save(path, {
         content: fileContent,
         format: 'text',
+        name: fileName,
+        type: 'file'
+      });
+
+      return path;
+    },
+    { fileContent: content, fileName: name }
+  );
+}
+
+async function createBinaryFile(
+  page: IJupyterLabPageFixture,
+  name: string,
+  content: string
+): Promise<string> {
+  return page.evaluate(
+    async ({ fileContent, fileName }) => {
+      const app = (window as any).galata.app;
+      await app.serviceManager.ready;
+
+      const path = `BrowserStorage:${fileName}`;
+      await app.serviceManager.contents.save(path, {
+        content: fileContent,
+        format: 'base64',
         name: fileName,
         type: 'file'
       });
@@ -202,14 +137,16 @@ test.describe('Browser Storage Contents', () => {
     const notebookPath = await createNotebook(page, source);
     const notebookName = notebookPath.split(':')[1];
 
-    let items = await getBrowserStorageItems(page);
-    expect(items.map(item => item.name)).toContain(notebookName);
+    expect(
+      await isBrowserStorageFileListedInBrowser(page, notebookName)
+    ).toBeTruthy();
 
     await page.reload();
     await page.waitForSelector('.jp-Launcher');
 
-    items = await getBrowserStorageItems(page);
-    expect(items.map(item => item.name)).toContain(notebookName);
+    expect(
+      await isBrowserStorageFileListedInBrowser(page, notebookName)
+    ).toBeTruthy();
     expect(await getNotebookSource(page, notebookPath)).toBe(source);
   });
 
@@ -219,92 +156,138 @@ test.describe('Browser Storage Contents', () => {
     const notebookPath = await createNotebook(page, '## initial source');
     const updatedSource = '## saved from notebook panel';
 
-    await page.evaluate(async path => {
-      const app = (window as any).galata.app;
-      await app.commands.execute('docmanager:open', { path });
-    }, notebookPath);
-
+    await openBrowserStorageItem(page, notebookPath);
     await page.waitForSelector('.jp-NotebookPanel');
-
-    await page.evaluate(source => {
-      const app = (window as any).galata.app;
-      const panel = app.shell.currentWidget as any;
-      panel.content.model.cells.get(0).sharedModel.setSource(source);
-    }, updatedSource);
-
-    await page
-      .getByRole('button', { name: /Save and create checkpoint/ })
-      .click();
+    await page.notebook.setCell(0, 'markdown', updatedSource);
+    await page.notebook.save();
     await expect
       .poll(() => getNotebookSource(page, notebookPath))
       .toBe(updatedSource);
   });
 
-  test('roundtrips text and binary files from a BrowserStorage notebook', async ({
+  test('roundtrips text and binary files through BrowserStorage contents', async ({
     page
   }) => {
-    test.setTimeout(240000);
+    const textWithExtension = {
+      content: 'Hello from BrowserStorage',
+      name: 'example.txt'
+    };
+    const textWithoutExtension = {
+      content: 'Crème brûlée 😀',
+      name: 'example'
+    };
+    const binaryContent = Buffer.from([0xff, 0xfe, 0xfd, 0x80, 0x61]).toString(
+      'base64'
+    );
+    const binaryWithExtension = {
+      content: binaryContent,
+      name: 'binary.bin'
+    };
+    const binaryWithoutExtension = {
+      content: binaryContent,
+      name: 'noext-binary'
+    };
 
-    const cellSources = [
-      [
-        'from pathlib import Path',
-        'name = "example.txt"',
-        'content = "Hello from BrowserStorage"',
-        'path = Path(name)',
-        'path.write_text(content, encoding="utf-8")',
-        'assert path.read_text(encoding="utf-8") == content',
-        'path.unlink()',
-        'print("Ok")'
-      ].join('\n'),
-      [
-        'from pathlib import Path',
-        'name = "example"',
-        'content = "Crème brûlée 😀"',
-        'path = Path(name)',
-        'path.write_text(content, encoding="utf-8")',
-        'assert path.read_text(encoding="utf-8") == content',
-        'path.unlink()',
-        'print("Ok")'
-      ].join('\n'),
-      [
-        'from pathlib import Path',
-        'name = "binary.bin"',
-        'original = bytes([0xFF, 0xFE, 0xFD, 0x80, 0x61])',
-        'path = Path(name)',
-        'path.write_bytes(original)',
-        'assert path.read_bytes() == original',
-        'path.unlink()',
-        'print("Ok")'
-      ].join('\n'),
-      [
-        'from pathlib import Path',
-        'name = "noext-binary"',
-        'original = bytes([0xFF, 0xFE, 0xFD, 0x80, 0x61])',
-        'path = Path(name)',
-        'path.write_bytes(original)',
-        'assert path.read_bytes() == original',
-        'path.unlink()',
-        'print("Ok")'
-      ].join('\n')
-    ];
-    const notebookPath = await createCodeNotebook(page, cellSources);
+    const textPath = await createTextFile(
+      page,
+      textWithExtension.name,
+      textWithExtension.content
+    );
+    const noExtensionTextPath = await createTextFile(
+      page,
+      textWithoutExtension.name,
+      textWithoutExtension.content
+    );
+    const binaryPath = await createBinaryFile(
+      page,
+      binaryWithExtension.name,
+      binaryWithExtension.content
+    );
+    const noExtensionBinaryPath = await createBinaryFile(
+      page,
+      binaryWithoutExtension.name,
+      binaryWithoutExtension.content
+    );
 
-    await page.evaluate(async path => {
+    expect(
+      await isBrowserStorageFileListedInBrowser(page, textWithExtension.name)
+    ).toBeTruthy();
+    expect(
+      await isBrowserStorageFileListedInBrowser(page, textWithoutExtension.name)
+    ).toBeTruthy();
+    expect(
+      await isBrowserStorageFileListedInBrowser(page, binaryWithExtension.name)
+    ).toBeTruthy();
+    expect(
+      await isBrowserStorageFileListedInBrowser(
+        page,
+        binaryWithoutExtension.name
+      )
+    ).toBeTruthy();
+
+    const textModel = await getFileModel(page, textPath, 'text');
+    expect(textModel.format).toBe('text');
+    expect(textModel.size).toBe(Buffer.byteLength(textWithExtension.content));
+    expect(textModel.content).toBe(textWithExtension.content);
+
+    const noExtensionTextModel = await getFileModel(
+      page,
+      noExtensionTextPath,
+      'text'
+    );
+    expect(noExtensionTextModel.format).toBe('text');
+    expect(noExtensionTextModel.size).toBe(
+      Buffer.byteLength(textWithoutExtension.content)
+    );
+    expect(noExtensionTextModel.content).toBe(textWithoutExtension.content);
+
+    const noExtensionTextAsBase64 = await getFileModel(
+      page,
+      noExtensionTextPath,
+      'base64'
+    );
+    expect(noExtensionTextAsBase64.format).toBe('base64');
+    expect(noExtensionTextAsBase64.content).toBe(
+      Buffer.from(textWithoutExtension.content, 'utf8').toString('base64')
+    );
+
+    const binaryModel = await getFileModel(page, binaryPath, 'base64');
+    expect(binaryModel.format).toBe('base64');
+    expect(binaryModel.size).toBe(Buffer.from(binaryContent, 'base64').length);
+    expect(binaryModel.content).toBe(binaryContent);
+
+    const noExtensionBinaryModel = await getFileModel(
+      page,
+      noExtensionBinaryPath,
+      'base64'
+    );
+    expect(noExtensionBinaryModel.format).toBe('base64');
+    expect(noExtensionBinaryModel.size).toBe(
+      Buffer.from(binaryContent, 'base64').length
+    );
+    expect(noExtensionBinaryModel.content).toBe(binaryContent);
+
+    const noContentModel = await page.evaluate(async path => {
       const app = (window as any).galata.app;
-      await app.commands.execute('docmanager:open', { path });
-    }, notebookPath);
+      await app.serviceManager.ready;
 
-    await page.waitForSelector('.jp-NotebookPanel');
-    await page.notebook.runCellByCell({
-      onAfterCellRun: async cellIndex => {
-        await expect
-          .poll(
-            async () =>
-              (await page.notebook.getCellTextOutput(cellIndex))?.[0] ?? '',
-            { timeout: 10000 }
-          )
-          .toContain('Ok');
-      }
+      const model = await app.serviceManager.contents.get(path, {
+        content: false,
+        format: 'text'
+      });
+
+      return {
+        content: model.content,
+        format: model.format,
+        size: model.size,
+        type: model.type
+      };
+    }, noExtensionTextPath);
+    expect(noContentModel).toEqual({
+      content: null,
+      format: 'text',
+      size: 0,
+      type: 'file'
     });
   });
 
@@ -313,20 +296,14 @@ test.describe('Browser Storage Contents', () => {
     const notebookName = notebookPath.split(':')[1];
 
     expect(await getNotebookSource(page, notebookPath)).toBe('## delete me');
-    expect(await getBrowserStorageItems(page)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: notebookName, path: notebookPath })
-      ])
-    );
+    expect(
+      await isBrowserStorageFileListedInBrowser(page, notebookName)
+    ).toBeTruthy();
 
     await deleteBrowserStoragePath(page, notebookPath);
 
     await expect
-      .poll(() =>
-        getBrowserStorageItems(page).then(items =>
-          items.some(item => item.name === notebookName)
-        )
-      )
+      .poll(() => isBrowserStorageFileListedInBrowser(page, notebookName))
       .toBe(false);
   });
 
@@ -348,21 +325,40 @@ test.describe('Browser Storage Contents', () => {
       });
     }, nestedPath);
 
-    expect(await getBrowserStorageItems(page)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: directoryName, path: directoryPath })
-      ])
-    );
+    expect(
+      await isBrowserStorageFileListedInBrowser(page, directoryName)
+    ).toBeTruthy();
 
     await deleteBrowserStoragePath(page, directoryPath);
 
     await expect
-      .poll(() =>
-        getBrowserStorageItems(page).then(items =>
-          items.some(item => item.name === directoryName)
-        )
-      )
+      .poll(() => isBrowserStorageFileListedInBrowser(page, directoryName))
       .toBe(false);
+  });
+
+  test('creates untitled files inside BrowserStorage directories', async ({
+    page
+  }) => {
+    const directoryPath = await createBrowserStorageDirectory(page);
+    const untitledModel = await page.evaluate(async path => {
+      const app = (window as any).galata.app;
+      await app.serviceManager.ready;
+
+      return app.serviceManager.contents.newUntitled({
+        ext: 'txt',
+        path,
+        type: 'file'
+      });
+    }, directoryPath);
+
+    expect(untitledModel.name).toBe('untitled.txt');
+    expect(untitledModel.path).toBe(`${directoryPath}/untitled.txt`);
+    expect(untitledModel.format).toBe('text');
+    expect(untitledModel.type).toBe('file');
+
+    const untitledFile = await getFileModel(page, untitledModel.path, 'text');
+    expect(untitledFile.path).toBe(untitledModel.path);
+    expect(untitledFile.content).toBe('');
   });
 
   test('downloads a BrowserStorage notebook', async ({ page }) => {

@@ -2,6 +2,7 @@ import { Buffer } from 'buffer';
 
 import { expect, type IJupyterLabPageFixture } from '@jupyterlab/galata';
 import type { Contents } from '@jupyterlab/services';
+import type { Locator } from '@playwright/test';
 
 export type UploadFile = Readonly<{
   base64: string;
@@ -15,8 +16,31 @@ type UploadContentsModel = Pick<
   'content' | 'format' | 'path' | 'size' | 'type'
 >;
 
+const BROWSER_STORAGE_SELECTOR = '#jp-filesystem-browser';
+
 function toBrowserStoragePath(path: string): string {
   return path.startsWith('BrowserStorage:') ? path : `BrowserStorage:${path}`;
+}
+
+function toBrowserStorageLocalPath(path: string): string {
+  return toBrowserStoragePath(path).replace(/^BrowserStorage:/, '');
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function browserStorageRoot(page: IJupyterLabPageFixture): Locator {
+  return page.locator(BROWSER_STORAGE_SELECTOR);
+}
+
+function browserStorageItemLocator(
+  page: IJupyterLabPageFixture,
+  name: string
+): Locator {
+  return browserStorageRoot(page).getByRole('listitem', {
+    name: new RegExp(`^Name: ${escapeRegExp(name)}(?:$|\\n)`)
+  });
 }
 
 export async function createBrowserStorageDirectory(
@@ -53,7 +77,7 @@ export async function activateBrowserStorage(
   page: IJupyterLabPageFixture
 ): Promise<void> {
   await page.getByRole('tab', { name: 'Browser Storage' }).click();
-  await expect(page.locator('#jp-filesystem-browser')).toBeVisible();
+  await expect(browserStorageRoot(page)).toBeVisible();
 }
 
 export async function clearBrowserStorageDrive(
@@ -73,37 +97,56 @@ export async function clearBrowserStorageDrive(
   });
 }
 
-export async function getBrowserStorageItems(
-  page: IJupyterLabPageFixture
-): Promise<Array<{ name: string; path: string; type: string }>> {
-  return page.evaluate(async () => {
-    const app = (window as any).galata.app;
-    await app.serviceManager.ready;
-
-    const widgets = Array.from(app.shell.widgets('left'));
-    const browser = widgets.find((widget: any) => {
-      return widget.id === 'jp-filesystem-browser';
-    });
-
-    if (!browser) {
-      throw new Error('Browser Storage file browser not found');
-    }
-
-    await browser.model.refresh();
-    return Array.from(browser.model.items()).map((item: any) => ({
-      name: item.name,
-      path: item.path,
-      type: item.type
-    }));
-  });
-}
-
 export async function isBrowserStorageFileListedInBrowser(
   page: IJupyterLabPageFixture,
   name: string
 ): Promise<boolean> {
-  const items = await getBrowserStorageItems(page);
-  return items.some(item => item.name === name);
+  await activateBrowserStorage(page);
+  return (await browserStorageItemLocator(page, name).count()) > 0;
+}
+
+async function openBrowserStorageDirectory(
+  page: IJupyterLabPageFixture,
+  directoryPath: string
+): Promise<void> {
+  await activateBrowserStorage(page);
+
+  const homeButton = browserStorageRoot(page)
+    .locator('.jp-FileBrowser-crumbs span')
+    .first();
+  if (await homeButton.count()) {
+    await homeButton.click();
+    await page.waitForTimeout(200);
+  }
+
+  for (const segment of directoryPath.split('/').filter(Boolean)) {
+    const directory = browserStorageItemLocator(page, segment);
+    await expect(directory).toBeVisible();
+    await directory.dblclick();
+    await browserStorageRoot(page)
+      .getByText(`/${segment}/`, { exact: true })
+      .waitFor();
+    await page.waitForTimeout(200);
+  }
+}
+
+export async function openBrowserStorageItem(
+  page: IJupyterLabPageFixture,
+  path: string
+): Promise<void> {
+  const localPath = toBrowserStorageLocalPath(path);
+  const parts = localPath.split('/').filter(Boolean);
+  const name = parts.pop();
+
+  if (!name) {
+    throw new Error(`Invalid BrowserStorage path: ${path}`);
+  }
+
+  await openBrowserStorageDirectory(page, parts.join('/'));
+
+  const item = browserStorageItemLocator(page, name);
+  await expect(item).toBeVisible();
+  await item.dblclick();
 }
 
 export async function chooseFilesForUpload(
@@ -197,29 +240,22 @@ export async function openAndGetEditorContent(
   page: IJupyterLabPageFixture,
   path: string
 ): Promise<string> {
-  const targetPath = toBrowserStoragePath(path);
-
-  await page.evaluate(async filePath => {
-    const app = (window as any).galata.app;
-    await app.commands.execute('docmanager:open', { path: filePath });
-  }, targetPath);
+  await openBrowserStorageItem(page, path);
 
   await page.waitForSelector('.jp-FileEditor');
-  return page.evaluate(() => {
-    const currentWidget = (window as any).galata.app.shell.currentWidget as {
-      context: {
-        model: {
-          toString(): string;
-        };
-      };
-    } | null;
+  const editor = page.locator('.jp-FileEditor').getByRole('textbox').last();
 
-    if (!currentWidget) {
-      throw new Error('No active file editor widget');
-    }
+  await editor.click();
+  await editor.press('Control+A');
+  await editor.press('Control+C');
 
-    return currentWidget.context.model.toString();
-  });
+  try {
+    await page.context().grantPermissions(['clipboard-read']);
+  } catch {
+    // Firefox does not support clipboard-read but does not need it either.
+  }
+
+  return page.evaluate(() => navigator.clipboard.readText());
 }
 
 export async function openAndGetNotebookCellSource(
@@ -227,33 +263,8 @@ export async function openAndGetNotebookCellSource(
   path: string,
   cellIndex: number = 0
 ): Promise<string> {
-  const targetPath = toBrowserStoragePath(path);
-
-  await page.evaluate(async filePath => {
-    const app = (window as any).galata.app;
-    await app.commands.execute('docmanager:open', { path: filePath });
-  }, targetPath);
+  await openBrowserStorageItem(page, path);
 
   await page.waitForSelector('.jp-NotebookPanel');
-  return page.evaluate(index => {
-    const currentWidget = (window as any).galata.app.shell.currentWidget as {
-      content: {
-        model: {
-          cells: {
-            get(cellIndex: number): {
-              sharedModel: {
-                getSource(): string;
-              };
-            };
-          };
-        };
-      };
-    } | null;
-
-    if (!currentWidget) {
-      throw new Error('No active notebook widget');
-    }
-
-    return currentWidget.content.model.cells.get(index).sharedModel.getSource();
-  }, cellIndex);
+  return page.notebook.getCellTextInput(cellIndex);
 }
