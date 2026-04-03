@@ -245,7 +245,7 @@ test.describe('Browser Storage Contents', () => {
   }) => {
     test.setTimeout(240000);
 
-    const notebookPath = await createCodeNotebook(page, [
+    const cellSources = [
       [
         'from pathlib import Path',
         'name = "example.txt"',
@@ -286,7 +286,8 @@ test.describe('Browser Storage Contents', () => {
         'path.unlink()',
         'print("Ok")'
       ].join('\n')
-    ]);
+    ];
+    const notebookPath = await createCodeNotebook(page, cellSources);
 
     await page.evaluate(async path => {
       const app = (window as any).galata.app;
@@ -294,15 +295,15 @@ test.describe('Browser Storage Contents', () => {
     }, notebookPath);
 
     await page.waitForSelector('.jp-NotebookPanel');
+    await page.notebook.runCellByCell();
 
-    await page.notebook.runCellByCell({
-      onAfterCellRun: async (cellIndex: number) => {
-        const output = await page.notebook.getCellTextOutput(cellIndex);
-
-        expect(output).toBeTruthy();
-        expect(output![0]).toContain('Ok');
-      }
-    });
+    for (const [cellIndex] of cellSources.entries()) {
+      await expect
+        .poll(
+          async () => (await page.notebook.getCellTextOutput(cellIndex))?.[0] ?? ''
+        )
+        .toContain('Ok');
+    }
   });
 
   test('creates a BrowserStorage notebook and deletes it', async ({ page }) => {
