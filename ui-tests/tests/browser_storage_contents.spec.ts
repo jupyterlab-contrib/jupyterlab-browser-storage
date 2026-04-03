@@ -48,6 +48,98 @@ async function createNotebook(
   }, source);
 }
 
+async function getPythonKernelName(
+  page: IJupyterLabPageFixture
+): Promise<string> {
+  const kernelName = await page.evaluate(async () => {
+    const app = (window as any).galata.app;
+    await app.serviceManager.ready;
+
+    const kernelspecs =
+      app.serviceManager.kernelspecs?.specs?.kernelspecs ?? {};
+
+    for (const name of ['python3', 'python']) {
+      if (kernelspecs[name]?.language === 'python') {
+        return name;
+      }
+    }
+
+    for (const [name, spec] of Object.entries(kernelspecs) as Array<
+      [string, { language?: string }]
+    >) {
+      if (spec.language === 'python') {
+        return name;
+      }
+    }
+
+    return null;
+  });
+
+  if (!kernelName) {
+    throw new Error(
+      'Could not find a Python kernel for notebook roundtrip tests'
+    );
+  }
+
+  return kernelName;
+}
+
+async function createCodeNotebook(
+  page: IJupyterLabPageFixture,
+  cellSources: string[]
+): Promise<string> {
+  const kernelName = await getPythonKernelName(page);
+
+  return page.evaluate(
+    async ({ kernelName, notebookCellSources }) => {
+      const app = (window as any).galata.app;
+      await app.serviceManager.ready;
+
+      const name = `browser-storage-roundtrip-${Date.now()}-${Math.floor(
+        Math.random() * 1000
+      )}.ipynb`;
+      const path = `BrowserStorage:${name}`;
+      const kernelspec =
+        app.serviceManager.kernelspecs?.specs?.kernelspecs?.[kernelName];
+
+      const content = {
+        cells: notebookCellSources.map((source: string) => ({
+          cell_type: 'code',
+          execution_count: null,
+          metadata: {
+            trusted: true
+          },
+          outputs: [],
+          source
+        })),
+        metadata: {
+          kernelspec: {
+            display_name: kernelspec?.display_name ?? kernelName,
+            language: kernelspec?.language ?? 'python',
+            name: kernelName
+          },
+          language_info: {
+            name: 'python'
+          },
+          orig_nbformat: 4
+        },
+        nbformat: 4,
+        nbformat_minor: 5
+      };
+
+      await app.serviceManager.contents.save(path, {
+        content,
+        format: 'json',
+        name,
+        type: 'notebook'
+      });
+
+      return path;
+    },
+    { kernelName, notebookCellSources: cellSources }
+  );
+}
+
 async function createTextFile(
   page: IJupyterLabPageFixture,
   name: string,
@@ -146,6 +238,71 @@ test.describe('Browser Storage Contents', () => {
     await expect
       .poll(() => getNotebookSource(page, notebookPath))
       .toBe(updatedSource);
+  });
+
+  test('roundtrips text and binary files from a BrowserStorage notebook', async ({
+    page
+  }) => {
+    test.setTimeout(240000);
+
+    const notebookPath = await createCodeNotebook(page, [
+      [
+        'from pathlib import Path',
+        'name = "example.txt"',
+        'content = "Hello from BrowserStorage"',
+        'path = Path(name)',
+        'path.write_text(content, encoding="utf-8")',
+        'assert path.read_text(encoding="utf-8") == content',
+        'path.unlink()',
+        'print("Ok")'
+      ].join('\n'),
+      [
+        'from pathlib import Path',
+        'name = "example"',
+        'content = "Crème brûlée 😀"',
+        'path = Path(name)',
+        'path.write_text(content, encoding="utf-8")',
+        'assert path.read_text(encoding="utf-8") == content',
+        'path.unlink()',
+        'print("Ok")'
+      ].join('\n'),
+      [
+        'from pathlib import Path',
+        'name = "binary.bin"',
+        'original = bytes([0xFF, 0xFE, 0xFD, 0x80, 0x61])',
+        'path = Path(name)',
+        'path.write_bytes(original)',
+        'assert path.read_bytes() == original',
+        'path.unlink()',
+        'print("Ok")'
+      ].join('\n'),
+      [
+        'from pathlib import Path',
+        'name = "noext-binary"',
+        'original = bytes([0xFF, 0xFE, 0xFD, 0x80, 0x61])',
+        'path = Path(name)',
+        'path.write_bytes(original)',
+        'assert path.read_bytes() == original',
+        'path.unlink()',
+        'print("Ok")'
+      ].join('\n')
+    ]);
+
+    await page.evaluate(async path => {
+      const app = (window as any).galata.app;
+      await app.commands.execute('docmanager:open', { path });
+    }, notebookPath);
+
+    await page.waitForSelector('.jp-NotebookPanel');
+
+    await page.notebook.runCellByCell({
+      onAfterCellRun: async (cellIndex: number) => {
+        const output = await page.notebook.getCellTextOutput(cellIndex);
+
+        expect(output).toBeTruthy();
+        expect(output![0]).toContain('Ok');
+      }
+    });
   });
 
   test('creates a BrowserStorage notebook and deletes it', async ({ page }) => {

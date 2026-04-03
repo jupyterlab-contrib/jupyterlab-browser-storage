@@ -134,43 +134,58 @@ export async function uploadFiles(
   files: UploadFile[]
 ): Promise<void> {
   await chooseFilesForUpload(page, files);
+  const progressBar = page.locator('.jp-Statusbar-ProgressBar-progress-bar');
 
   for (const file of files) {
     await expect
-      .poll(() => isBrowserStorageFileListedInBrowser(page, file.name))
+      .poll(async () => {
+        const isListed = await isBrowserStorageFileListedInBrowser(
+          page,
+          file.name
+        );
+        const isProgressHidden = !(await progressBar
+          .isVisible()
+          .catch(() => false));
+
+        return isListed && isProgressHidden;
+      })
       .toBeTruthy();
   }
 }
 
 export async function getFileModel(
   page: IJupyterLabPageFixture,
-  path: string
+  path: string,
+  format: 'json' | 'text' | 'base64'
 ): Promise<UploadContentsModel> {
   const targetPath = toBrowserStoragePath(path);
 
-  return page.evaluate(async filePath => {
-    await (window as any).galata.app.serviceManager.ready;
-    const model = await (window as any).galata.app.serviceManager.contents.get(
-      filePath,
-      {
-        content: true
-      }
-    );
-    return {
-      content: model.content,
-      format: model.format,
-      path: model.path,
-      size: model.size,
-      type: model.type
-    };
-  }, targetPath);
+  return page.evaluate(
+    async options => {
+      await (window as any).galata.app.serviceManager.ready;
+      const model = await (
+        window as any
+      ).galata.app.serviceManager.contents.get(options.path, {
+        content: true,
+        format: options.format
+      });
+      return {
+        content: model.content,
+        format: model.format,
+        path: model.path,
+        size: model.size,
+        type: model.type
+      };
+    },
+    { path: targetPath, format }
+  );
 }
 
 export async function getNotebookSource(
   page: IJupyterLabPageFixture,
   path: string
 ): Promise<string> {
-  const model = await getFileModel(page, path);
+  const model = await getFileModel(page, path, 'json');
   return normalizeNotebookSource((model.content as any).cells[0].source);
 }
 
