@@ -300,7 +300,8 @@ test.describe('Browser Storage Contents', () => {
     for (const [cellIndex] of cellSources.entries()) {
       await expect
         .poll(
-          async () => (await page.notebook.getCellTextOutput(cellIndex))?.[0] ?? ''
+          async () =>
+            (await page.notebook.getCellTextOutput(cellIndex))?.[0] ?? ''
         )
         .toContain('Ok');
     }
