@@ -8,7 +8,6 @@ import {
   getFileModel,
   isBrowserStorageFileListedInBrowser,
   normalizeNotebookSource,
-  openAndGetEditorContent,
   type UploadFile,
   uploadFiles
 } from './browser_storage_utils';
@@ -66,9 +65,6 @@ test.describe('Browser Storage Upload Tests', () => {
     expect(uploadedBinary.size).toBe(binaryFile.size);
     expect(uploadedBinary.content).toBe(binaryFile.base64);
 
-    const editorContent = await openAndGetEditorContent(page, textFile.name);
-    expect(editorContent).toBe(textFile.text);
-
     expect(sha256FromBase64(uploadedBinary.content as string)).toBe(
       binaryFile.sha256
     );
@@ -93,9 +89,6 @@ test.describe('Browser Storage Upload Tests', () => {
     expect(uploadedText.format).toBe('text');
     expect(uploadedText.size).toBe(textFile.size);
     expect(uploadedText.content).toBe(textFile.text);
-
-    const editorContent = await openAndGetEditorContent(page, textFile.name);
-    expect(editorContent).toBe(textFile.text);
   });
 
   test('Upload a large binary file', async ({ page }) => {

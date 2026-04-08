@@ -16,7 +16,7 @@ type UploadContentsModel = Pick<
   'content' | 'format' | 'path' | 'size' | 'type'
 >;
 
-const BROWSER_STORAGE_SELECTOR = '#jp-filesystem-browser';
+const BROWSER_STORAGE_TOOLBAR_SELECTOR = '#jp-browserstorage-toolbar';
 
 function toBrowserStoragePath(path: string): string {
   return path.startsWith('BrowserStorage:') ? path : `BrowserStorage:${path}`;
@@ -31,7 +31,13 @@ function escapeRegExp(text: string): string {
 }
 
 function browserStorageRoot(page: IJupyterLabPageFixture): Locator {
-  return page.locator(BROWSER_STORAGE_SELECTOR);
+  return page
+    .locator(BROWSER_STORAGE_TOOLBAR_SELECTOR)
+    .locator('xpath=ancestor::*[contains(@class, "jp-FileBrowser")][1]');
+}
+
+function browserStorageTab(page: IJupyterLabPageFixture): Locator {
+  return page.getByRole('tab', { name: 'Browser Storage' });
 }
 
 function browserStorageItemLocator(
@@ -39,7 +45,7 @@ function browserStorageItemLocator(
   name: string
 ): Locator {
   return browserStorageRoot(page).getByRole('listitem', {
-    name: new RegExp(`^Name: ${escapeRegExp(name)}(?:$|\\n)`)
+    name: new RegExp(`^Name: ${escapeRegExp(name)}(?:$|\\s|\\n)`)
   });
 }
 
@@ -76,7 +82,13 @@ export async function deleteBrowserStoragePath(
 export async function activateBrowserStorage(
   page: IJupyterLabPageFixture
 ): Promise<void> {
-  await page.getByRole('tab', { name: 'Browser Storage' }).click();
+  const tab = browserStorageTab(page);
+
+  if ((await tab.getAttribute('aria-selected')) !== 'true') {
+    await tab.click();
+  }
+
+  await expect(page.locator(BROWSER_STORAGE_TOOLBAR_SELECTOR)).toBeVisible();
   await expect(browserStorageRoot(page)).toBeVisible();
 }
 
@@ -199,7 +211,7 @@ export async function uploadFiles(
 export async function getFileModel(
   page: IJupyterLabPageFixture,
   path: string,
-  format: 'json' | 'text' | 'base64'
+  format?: 'json' | 'text' | 'base64'
 ): Promise<UploadContentsModel> {
   const targetPath = toBrowserStoragePath(path);
 
@@ -228,7 +240,7 @@ export async function getNotebookSource(
   page: IJupyterLabPageFixture,
   path: string
 ): Promise<string> {
-  const model = await getFileModel(page, path, 'json');
+  const model = await getFileModel(page, path);
   return normalizeNotebookSource((model.content as any).cells[0].source);
 }
 
