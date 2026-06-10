@@ -229,6 +229,102 @@ test.describe('Browser Storage Contents', () => {
       .toBe(false);
   });
 
+  test('rejects writes to missing BrowserStorage directories', async ({
+    page
+  }) => {
+    const result = await page.evaluate(async () => {
+      const app = (window as any).galata.app;
+      await app.serviceManager.ready;
+
+      const contents = app.serviceManager.contents;
+      const missing = 'missing-directory';
+      const missingPath = `BrowserStorage:${missing}`;
+      const sourcePath = 'BrowserStorage:source.txt';
+      const errors: Record<string, string> = {};
+
+      await contents.save(sourcePath, {
+        content: 'source content',
+        format: 'text',
+        name: 'source.txt',
+        type: 'file'
+      });
+
+      try {
+        await contents.newUntitled({
+          path: missingPath,
+          type: 'file',
+          ext: '.txt'
+        });
+      } catch (error) {
+        errors.newUntitled = (error as Error).message;
+      }
+
+      try {
+        await contents.save(`${missingPath}/file.txt`, {
+          type: 'file',
+          format: 'text',
+          content: 'hidden content'
+        });
+      } catch (error) {
+        errors.save = (error as Error).message;
+      }
+
+      try {
+        await contents.copy(sourcePath, missingPath);
+      } catch (error) {
+        errors.copy = (error as Error).message;
+      }
+
+      try {
+        await contents.rename(sourcePath, `${missingPath}/renamed.txt`);
+      } catch (error) {
+        errors.rename = (error as Error).message;
+      }
+
+      const hiddenFileExists = await contents
+        .get(`${missingPath}/file.txt`)
+        .then(() => true)
+        .catch(() => false);
+      const renamedFileExists = await contents
+        .get(`${missingPath}/renamed.txt`)
+        .then(() => true)
+        .catch(() => false);
+      const sourceFileExists = await contents
+        .get(sourcePath)
+        .then(() => true)
+        .catch(() => false);
+      const root = await contents.get('BrowserStorage:', { content: true });
+      const missingDirectoryExists = root.content.some(
+        (item: any) => item.name === missing
+      );
+
+      return {
+        errors,
+        hiddenFileExists,
+        missingDirectoryExists,
+        renamedFileExists,
+        sourceFileExists
+      };
+    });
+
+    expect(result.errors.newUntitled).toContain(
+      'Directory does not exist: missing-directory'
+    );
+    expect(result.errors.save).toContain(
+      'Directory does not exist: missing-directory'
+    );
+    expect(result.errors.copy).toContain(
+      'Directory does not exist: missing-directory'
+    );
+    expect(result.errors.rename).toContain(
+      'Directory does not exist: missing-directory'
+    );
+    expect(result.hiddenFileExists).toBe(false);
+    expect(result.renamedFileExists).toBe(false);
+    expect(result.sourceFileExists).toBe(true);
+    expect(result.missingDirectoryExists).toBe(false);
+  });
+
   test('downloads a BrowserStorage notebook', async ({ page }) => {
     const source = '## Downloaded notebook';
     const path = await createNotebook(page, source);
